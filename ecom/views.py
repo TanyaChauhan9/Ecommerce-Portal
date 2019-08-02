@@ -2,7 +2,7 @@ from django.shortcuts import render, redirect,get_object_or_404
 from django.http import HttpResponse
 from django.contrib.auth.forms import UserCreationForm
 from django.contrib import messages
-from .forms import UserRegistrationForm, UserUpdateForm, ProfileUpdateForm, AboutUpdateForm
+from .forms import UserRegistrationForm, UserUpdateForm, ProfileUpdateForm
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.mixins import LoginRequiredMixin, UserPassesTestMixin
 from django.views.generic import (
@@ -12,20 +12,89 @@ from django.views.generic import (
     UpdateView,
     DeleteView
 )
-from .models import Course, About,Profile
+from .models import Profile, Product, Cart
 from django.core.files.storage import FileSystemStorage
 from bs4 import BeautifulSoup
 import requests
 import urllib.request
-
+from django.db.models import Q
 def home(request):
 	search_term = ''
-	abouts = About.objects.all()
+	products = Product.objects.filter(~Q(seller=request.user))  
+	#displalying all products which are not of the current user
 	if 'search' in request.GET:
 		search_term = request.GET['search']
-		abouts = About.objects.filter(name__icontains = search_term)
-	context = {'search_term':search_term, 'abouts':abouts}
+		products = Product.objects.filter(title__icontains = search_term)
+
+		catproducts=Product.objects.filter(category__icontains=search_term)
+		print(products)
+		if products.first() is None:
+			products=catproducts
+		print(products)
+		#products = products.update(catproducts)
+	context = {'products':products}
 	return render(request, 'ecom/home.html', context)
+# class ProductListView(ListView):
+#     model = Product
+#     template_name = 'ecom/home.html'  # <app>/<model>_<viewtype>.html
+#     context_object_name = 'products'
+#     ordering = ['-date_posted']
+#     paginate_by = 5
+
+
+# class UserProductsListView(ListView):
+#     model = Product
+#     template_name = 'ecom/profile.html'  # <app>/<model>_<viewtype>.html
+#     context_object_name = 'products'
+#     paginate_by = 5
+
+#     def get_queryset(self):
+#         user = get_object_or_404(User, username=self.kwargs.get('username'))
+#         return Product.objects.filter(author=user).order_by('-date_posted')
+
+
+class ProductDetailView(DetailView):
+    model = Product
+
+
+class ProductCreateView(LoginRequiredMixin, CreateView):
+    model = Product
+    fields = ['title', 'description', 'price', 'image']
+
+    def form_valid(self, form):
+        form.instance.seller = self.request.user
+        return super().form_valid(form)
+
+
+class ProductUpdateView(LoginRequiredMixin, UserPassesTestMixin, UpdateView):
+    model = Product
+    fields = ['title', 'description', 'price', 'image']
+
+    def form_valid(self, form):
+        form.instance.seller = self.request.user
+        return super().form_valid(form)
+
+    def test_func(self):
+        product = self.get_object()
+        if self.request.user == product.seller:
+            return True
+        return False
+
+
+class ProductDeleteView(LoginRequiredMixin, UserPassesTestMixin, DeleteView):
+	model = Product
+	success_url = '/'
+	def test_func(self):
+		product = self.get_object()
+		if self.request.user == product.seller:
+			carts = Cart.objects.all();
+			for cart in carts:
+				if product.id in cart.products:
+					# print(cart.products)
+					(cart.products).remove(product.id)
+					cart.save()
+			return True
+		return False
 
 def register(request):
 	if request.method == 'POST':
@@ -38,27 +107,6 @@ def register(request):
 	else:
 		form = UserRegistrationForm()
 	return render(request, 'ecom/register.html', {'form': form})
-
-def update(request, soup):
-    print("daman")
-    main = soup.find("div")
-    ed = main.findAll("p")
-    c = 13
-    for a in ed:
-        if 6 < c < 10:
-            degree = a.text.split(',')
-            sab = degree[0].split('\\n\\t\\t\\t')
-            print(degree)
-            print(sab)
-            e = education(education_of=request.user)
-
-            e.degree = sab[0]
-            e.left= ""
-            e.subject = sab[1]
-            e.joined = degree[2]
-            e.college = degree[1]
-            e.save()
-        c -= 1
 
 @login_required
 def profile(request):
@@ -92,86 +140,82 @@ def profile(request):
 	return render(request, 'ecom/profile.html',context)
 
 @login_required
-def about(request):
-	if request.method == 'POST':
-		a_form=AboutUpdateForm(request.POST, request.FILES, instance=request.user.about)
-		a_form.save()
-		messages.success(request, f'Account updated!')
-		return redirect('about')
-	else:
-		a_form=AboutUpdateForm(instance=request.user.about)
-	context={
-    	'a_form':a_form
-	}
-	return render(request, 'ecom/about.html',context)
+def addtocart(request, pk=None):
+	# print(pk)
+	if pk is not None:
+		cart=Cart.objects.filter(user=request.user).first()
+		if pk not in cart.products:
+			cart.products.append(pk)
+			cart.save()
+		# (Cart.objects.filter(user=request.user).first()).products = cart.products
+		print((Cart.objects.filter(user=request.user).first()).products)
+		# (Cart.objects.filter(user=request.user).first()).products.append(pk)
+		# print((Cart.objects.filter(user=request.user).first()).products)
+	#return render(request, 'ecom/profile.html')	
+	return redirect('home')
+@login_required
+def cart(request):
+	objects = []
+	cart=Cart.objects.filter(user=request.user).first()
+	print(cart.products)
+	for product in cart.products:
+		# print(product)
+		objects.append((Product.objects.filter(id = product)).first())
+	context = {'products': objects}
+	print(objects)
+	return render(request, 'ecom/cart.html', context)
+@login_required
+def delete_from_cart(request, pk=None):
+	if pk is not None:
+		cart=Cart.objects.filter(user=request.user).first()
+		if pk in cart.products:
+			cart.products.remove(pk)
+			cart.save()
+	return redirect('cart')
+
+class ProductListView(ListView):
+    model = Product
+    template_name = 'ecom/cart.html'  # <app>/<model>_<viewtype>.html
+    context_object_name = 'products'
+
+class ProductDetailView(DetailView):
+    model = Product
 
 @login_required
-def teaching(request):
+def checkout(request):
+	cart=Cart.objects.filter(user=request.user).first()
+	print(cart.products)
+	for product in cart.products:	
+		pdt = (Product.objects.filter(id = product)).first()
+		if (pdt).buyer==-1:
+			pdt.buyer = request.user.profile.id
+			pdt.save()
+	return redirect('cart')
+
+@login_required
+def notif(request):
+	objects = []
+	products = Product.objects.filter(seller=request.user).filter(~Q(buyer=-1))
+	for product in products:
+		objects.append(Profile.objects.get(id=product.buyer))
+
+	notifications=zip(products,objects)
 	context = {
-        'courses': Course.objects.all()
-    }
-	return render(request, 'ecom/teaching.html', context)
+	'notifications' : notifications
+	}
+	return render(request,'ecom/notif.html',context)
 
-class CourseListView(ListView):
-    model = Course
-    template_name = 'ecom/teaching.html'  # <app>/<model>_<viewtype>.html
-    context_object_name = 'courses'
+# class ProductDeleteView(DeleteView):
+#     model = Product
+#     user.cart.products.pop()
 
+# def prof_page(request, pk=None):
+# 	q = About.objects.get(pk=pk)
+# 	username = q.user.username
+# 	qs = get_object_or_404(Profile, user__username=username)
+# 	cou = Course.objects.filter(teacher__username=username)
+# 	abo = About.objects.filter(user__username=username)
 
-class CourseDetailView(DetailView):
-    model = Course
+# 	context ={'q':q, 'qs':qs , 'cou':cou , 'abo':abo}
 
-
-class CourseCreateView(LoginRequiredMixin, CreateView):
-    model = Course
-    fields = ['course_title', 'content']
-
-    def form_valid(self, form):
-        form.instance.teacher = self.request.user
-        return super().form_valid(form)
-
-
-class CourseUpdateView(LoginRequiredMixin, UserPassesTestMixin, UpdateView):
-    model = Course
-    fields = ['course_title', 'content']
-
-    def form_valid(self, form):
-        form.instance.teacher = self.request.user
-        return super().form_valid(form)
-
-    def test_func(self):
-        course = self.get_object()
-        if self.request.user == course.teacher:
-            return True
-        return False
-
-
-class CourseDeleteView(LoginRequiredMixin, UserPassesTestMixin, DeleteView):
-    model = Course
-   # success_url = 'teaching/' 
-
-    def test_func(self):
-        course = self.get_object()
-        if self.request.user == course.teacher:
-            return True
-        return False
-@login_required
-def upload(request):
-	if request.method=='POST':
-		uploaded_file=request.FILES['document']
-		fs=FileSystemStorage()
-		fs.save(uploaded_file.name, uploaded_file)
-
-	return render(request, 'ecom/upload.html')
-# Create your views here.
-
-def prof_page(request, pk=None):
-	q = About.objects.get(pk=pk)
-	username = q.user.username
-	qs = get_object_or_404(Profile, user__username=username)
-	cou = Course.objects.filter(teacher__username=username)
-	abo = About.objects.filter(user__username=username)
-
-	context ={'q':q, 'qs':qs , 'cou':cou , 'abo':abo}
-
-	return render(request,'ecom/response.html' ,context)
+# 	return render(request,'ecom/response.html' ,context)
